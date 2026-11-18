@@ -1,0 +1,242 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><style>body{margin:0}[hidden]{display:none!important}</style></head><body>
+<title>Mindful Window</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&display=swap">
+<style>
+  /* Camera-app layout: one column, framed viewfinder in the middle, controls below. Deliberately dark only. */
+  :root {
+    --ink: #17141f;
+    --panel: #221e2e;
+    --line: #3a3550;
+    --text: #f2f0f7;
+    --muted: #a8a3bb;
+    --accent: #9696c8;
+    --font: "Outfit", system-ui, -apple-system, "Segoe UI", sans-serif;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body {
+    background: var(--ink); color: var(--text); font-family: var(--font);
+    display: flex; flex-direction: column; gap: 12px;
+    padding-block: 12px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    box-sizing: border-box; overflow: hidden;
+  }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .brand { font-weight: 700; font-size: 18px; letter-spacing: 0.01em; }
+  .brand small { display: block; font-weight: 400; font-size: 11px; color: var(--muted); letter-spacing: 0.04em; }
+  .designs { display: flex; gap: 8px; }
+  .designs button {
+    font: 600 13px var(--font); color: var(--text); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 999px; padding: 7px 12px 7px 8px;
+    display: flex; align-items: center; gap: 6px; cursor: pointer;
+  }
+  .designs button[aria-pressed="true"] { border-color: var(--text); }
+  .swatch { width: 14px; height: 14px; border-radius: 50%; }
+  .stage-wrap { flex: 1; min-height: 0; display: flex; }
+  .stage {
+    position: relative; flex: 1;
+    border-radius: 6px; overflow: hidden; background: #000; touch-action: none;
+  }
+  .stage canvas, .stage img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; object-fit: contain; }
+  .notice { color: var(--muted); font-size: 13px; line-height: 1.4; text-align: center; max-width: 40ch; margin-inline: auto; }
+  .controls { display: flex; align-items: center; justify-content: center; gap: 20px; min-height: 76px; }
+  .zoom { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+  .zoom input { width: 72px; accent-color: var(--accent); }
+  .shutter {
+    width: 68px; height: 68px; border-radius: 50%; cursor: pointer;
+    background: var(--text); border: 4px solid var(--ink); box-shadow: 0 0 0 3px var(--text);
+  }
+  .shutter:active { transform: scale(0.94); }
+  .pill {
+    font: 600 14px var(--font); color: var(--text); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 999px; padding: 10px 16px; cursor: pointer; white-space: nowrap;
+  }
+  .pill.primary { background: var(--text); color: var(--ink); border-color: var(--text); }
+  button:focus-visible, label:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #file { position: absolute; width: 1px; height: 1px; opacity: 0; }
+</style>
+
+<header>
+  <div class="brand">Mindful Museums<small>Your Window into Experiencing Art</small></div>
+  <div class="designs" role="group" aria-label="Card design">
+    <button id="d-purple" aria-pressed="true"><span class="swatch" style="background:#9696c8"></span>Lavender</button>
+    <button id="d-teal" aria-pressed="false"><span class="swatch" style="background:#52819a"></span>Teal</button>
+  </div>
+</header>
+
+<div class="stage-wrap">
+  <div class="stage" id="stage">
+    <canvas id="view"></canvas>
+    <img id="result" alt="Your framed photo" hidden>
+  </div>
+</div>
+<div class="notice" id="notice" role="status" hidden></div>
+
+<div class="controls" id="shoot">
+  <label class="pill" for="file">Use a photo<input id="file" type="file" accept="image/*" capture="environment"></label>
+  <button class="shutter" id="snap" aria-label="Take picture"></button>
+  <div class="zoom"><label for="zoom">Zoom</label><input id="zoom" type="range" min="1" max="3" step="0.01" value="1"></div>
+</div>
+<div class="controls" id="done" hidden>
+  <button class="pill" id="retake">Retake</button>
+  <button class="pill primary" id="save">Save photo</button>
+</div>
+
+<script>
+// The client's card artwork, rotated to landscape with the white window made transparent.
+const CARDS = {};
+for (const [name, file] of [["purple", "card-lavender.png"], ["teal", "card-teal.png"]]) {
+  CARDS[name] = new Image();
+  CARDS[name].src = file;
+}
+const CARD_W = 2000, CARD_H = 1410, CARD_FILL = 0.88;
+const PHOTO_LONG_SIDE = 2400;
+
+const view = document.getElementById("view");
+const vctx = view.getContext("2d");
+const video = document.createElement("video");
+video.muted = true; video.playsInline = true;
+const state = { design: "purple", source: null, zoom: 1, panX: 0, panY: 0 };
+
+function sourceSize(src) {
+  return src === video ? [video.videoWidth, video.videoHeight] : [src.naturalWidth, src.naturalHeight];
+}
+
+// Cover-fit the source, then apply zoom and pan (pan is a fraction of the frame, clamped so no gaps show).
+function drawScene(ctx, W, H) {
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
+  const src = state.source;
+  if (src) {
+    const [sw, sh] = sourceSize(src);
+    if (sw && sh) {
+      const s = Math.max(W / sw, H / sh) * state.zoom;
+      const dw = sw * s, dh = sh * s;
+      const maxX = (dw - W) / 2 / W, maxY = (dh - H) / 2 / H;
+      state.panX = Math.max(-maxX, Math.min(maxX, state.panX));
+      state.panY = Math.max(-maxY, Math.min(maxY, state.panY));
+      ctx.drawImage(src, (W - dw) / 2 + state.panX * W, (H - dh) / 2 + state.panY * H, dw, dh);
+    }
+  }
+  // The card floats over the camera, so the gallery shows around it as well as through the window.
+  const card = CARDS[state.design];
+  if (card.complete) {
+    const cw = Math.min(W * CARD_FILL, H * CARD_FILL * CARD_W / CARD_H), ch = cw * CARD_H / CARD_W;
+    ctx.drawImage(card, (W - cw) / 2, (H - ch) / 2, cw, ch);
+  }
+}
+
+function resizeView() {
+  const r = view.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  view.width = Math.round(r.width * dpr); view.height = Math.round(r.height * dpr);
+}
+
+function loop() {
+  drawScene(vctx, view.width, view.height);
+  requestAnimationFrame(loop);
+}
+
+const notice = document.getElementById("notice");
+function say(text) { notice.textContent = text; notice.hidden = !text; }
+
+async function startCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false,
+    });
+    video.srcObject = stream;
+    await video.play();
+    state.source = video;
+    say("");
+  } catch {
+    say("Live camera isn't available here. Tap “Use a photo”, then drag it to frame what you want in the window.");
+  }
+}
+
+document.getElementById("file").addEventListener("change", (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const img = new Image();
+  img.onload = () => {
+    if (video.srcObject) video.srcObject.getTracks().forEach((t) => t.stop());
+    state.source = img; state.panX = 0; state.panY = 0;
+    say("Drag to move the picture. Use Zoom to get closer.");
+    setTimeout(() => say(""), 4000);
+  };
+  img.src = URL.createObjectURL(f);
+});
+
+const zoom = document.getElementById("zoom");
+zoom.addEventListener("input", () => { state.zoom = Number(zoom.value); });
+
+let drag = null;
+view.addEventListener("pointerdown", (e) => {
+  drag = { x: e.clientX, y: e.clientY, px: state.panX, py: state.panY };
+  view.setPointerCapture(e.pointerId);
+});
+view.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  const r = view.getBoundingClientRect();
+  state.panX = drag.px + (e.clientX - drag.x) / r.width;
+  state.panY = drag.py + (e.clientY - drag.y) / r.height;
+});
+view.addEventListener("pointerup", () => { drag = null; });
+view.addEventListener("pointercancel", () => { drag = null; });
+
+for (const name of Object.keys(CARDS)) {
+  document.getElementById("d-" + name).addEventListener("click", () => {
+    state.design = name;
+    for (const n of Object.keys(CARDS)) document.getElementById("d-" + n).setAttribute("aria-pressed", String(n === name));
+  });
+}
+
+const result = document.getElementById("result");
+const shoot = document.getElementById("shoot"), done = document.getElementById("done");
+let photo = null;
+
+document.getElementById("snap").addEventListener("click", () => {
+  if (!state.source) { say("Take or choose a photo first."); return; }
+  // Same shape as the viewfinder, so the photo matches what was on screen.
+  const k = PHOTO_LONG_SIDE / Math.max(view.width, view.height);
+  const out = document.createElement("canvas");
+  out.width = Math.round(view.width * k); out.height = Math.round(view.height * k);
+  drawScene(out.getContext("2d"), out.width, out.height);
+  out.toBlob((blob) => {
+    photo = blob;
+    result.src = URL.createObjectURL(blob);
+    result.hidden = false; shoot.hidden = true; done.hidden = false;
+  }, "image/jpeg", 0.92);
+});
+
+document.getElementById("retake").addEventListener("click", () => {
+  result.hidden = true; shoot.hidden = false; done.hidden = true; say("");
+});
+
+// Inside claude.ai the page must save through the downloads capability; on a normal website, share sheet or download.
+let downloads = null;
+if (window.claude?.use) claude.use("downloads").then((d) => { downloads = d; });
+
+document.getElementById("save").addEventListener("click", async () => {
+  const filename = "mindful-museums.jpg";
+  if (downloads) {
+    try { await downloads.save({ filename, data: photo }); say("Saved."); }
+    catch (e) { if (e?.code !== "declined") say("Couldn't save the photo here. Try again in a moment."); }
+    return;
+  }
+  const file = new File([photo], filename, { type: "image/jpeg" });
+  if (navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: "Mindful Museums" }); } catch {}
+    return;
+  }
+  const a = document.createElement("a");
+  a.href = result.src; a.download = filename; a.click();
+});
+
+new ResizeObserver(resizeView).observe(view);
+loop();
+startCamera();
+</script>
+
+</body></html>
