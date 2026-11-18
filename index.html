@@ -64,6 +64,7 @@
   <div class="designs" role="group" aria-label="Card design">
     <button id="d-purple" aria-pressed="true"><span class="swatch" style="background:#9696c8"></span>Lavender</button>
     <button id="d-teal" aria-pressed="false"><span class="swatch" style="background:#52819a"></span>Teal</button>
+    <button id="d-coral" aria-pressed="false"><span class="swatch" style="background:#e5453b"></span>Coral</button>
   </div>
 </header>
 
@@ -88,7 +89,7 @@
 <script>
 // The client's card artwork, rotated to landscape with the white window made transparent.
 const CARDS = {};
-for (const [name, file] of [["purple", "card-lavender.png"], ["teal", "card-teal.png"]]) {
+for (const [name, file] of [["purple", "card-lavender.png"], ["teal", "card-teal.png"], ["coral", "card-coral.png"]]) {
   CARDS[name] = new Image();
   CARDS[name].src = file;
 }
